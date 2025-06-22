@@ -6,19 +6,22 @@ from torch.utils.data import DataLoader
 import torch.nn.functional as F
 import torch.jit as jit
 from typing import List, Tuple
+import matplotlib.pyplot as plt
+import os
+
 # 设备配置
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # 超参数
 input_size = 28
 sequence_length = 28
-hidden_size = 128
+hidden_size = 28 * 28
 num_classes = 10
 batch_size = 128
 learning_rate = 0.001
 
-num_epochs_memory = 5  # 记忆训练轮数
-num_epochs_classify = 2  # 分类训练轮数
+num_epochs_memory = 2  # 记忆训练轮数
+num_epochs_classify = 3  # 分类训练轮数
 
 # MNIST数据集
 train_dataset = torchvision.datasets.MNIST(root='./data', 
@@ -43,21 +46,19 @@ class MemoryModule(jit.ScriptModule):
         super(MemoryModule, self).__init__()
         self.hidden_size = hidden_size
         self.input_state_size = hidden_size + input_size
-        self.de_target_size = input_size + hidden_size
+        self.de_target_size = input_size + input_size + hidden_size
 
         # 记忆网络组件
         self.state_decoder = nn.Sequential(
-            nn.Linear(self.input_state_size, 128),
+            nn.Linear(self.input_state_size, 64),
             nn.GELU(),
-            nn.Linear(128, 128),
-            nn.GELU(),
-            nn.Linear(128, hidden_size)
+            nn.Linear(64, hidden_size)
         )
         
         self.state_encoder = nn.Sequential(
-            nn.Linear(hidden_size, 128),
+            nn.Linear(hidden_size + hidden_size + input_size, 64),
             nn.GELU(),
-            nn.Linear(128, self.de_target_size)
+            nn.Linear(64, self.de_target_size)
         )
     
     @jit.script_method
@@ -81,9 +82,11 @@ class MemoryModule(jit.ScriptModule):
             next_h = self.state_decoder(combined_input)
             
             # 保存目标和输出
-            combined_target = torch.cat([x_t, prev_h], dim=1)
+            combined_target = torch.cat([x_t, prev_x, prev_h], dim=1)
+            combined_input = torch.cat([h_t, x_t, next_h], dim=1)
+            
             all_encoder_targets[:, t] = combined_target
-            all_encoder_outputs[:, t] = self.state_encoder(next_h)
+            all_encoder_outputs[:, t] = self.state_encoder(combined_input)
             all_hidden_state[:, t] = next_h
             
             # 更新状态 - 使用更高效的梯度控制
@@ -95,7 +98,7 @@ class MemoryModule(jit.ScriptModule):
 class ClassifyModule(jit.ScriptModule):
     def __init__(self, hidden_size, num_classes):
         super(ClassifyModule, self).__init__()
-        self.units = 64
+        self.units = 128
         
         self.fc = nn.Sequential(
             nn.Linear(hidden_size, self.units),
@@ -199,6 +202,29 @@ with torch.no_grad():
         correct += (predicted == labels).sum().item()
 
     print(f'测试准确率: {100 * correct / total:.2f}%')
+
+sample_images, _ = next(iter(test_loader))
+sample_images = sample_images.squeeze(1).to(device)  # shape: (batch, 28, 28)
+
+# 获取隐藏状态
+with torch.no_grad():
+    _, _, hidden_states = memory_model(sample_images)
+    h_t = hidden_states[0, -1, :]  # 第一个样本，最后时间步的 hidden state
+
+# 将 hidden state reshape 成 28x28 的图像
+h_image = h_t.view(28, 28).cpu().numpy()
+
+# 创建保存目录
+os.makedirs("visuals", exist_ok=True)
+
+# 保存图片
+plt.imshow(h_image, cmap='gray')
+plt.title("Final Hidden State (Reshaped)")
+plt.axis('off')
+plt.savefig("visuals/hidden_state_image.png")
+plt.close()
+
+print("已保存 hidden state 图像到 'visuals/hidden_state_image.png'")
 
 # 保存模型
 torch.save({
