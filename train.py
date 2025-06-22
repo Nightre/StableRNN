@@ -15,7 +15,7 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 # 超参数
 input_size = 28
 sequence_length = 28
-hidden_size = 28 * 28
+hidden_size = 256
 num_classes = 10
 batch_size = 128
 learning_rate = 0.001
@@ -56,7 +56,7 @@ class MemoryModule(jit.ScriptModule):
         )
         
         self.state_encoder = nn.Sequential(
-            nn.Linear(hidden_size + hidden_size + input_size, 64),
+            nn.Linear(hidden_size, 64),
             nn.GELU(),
             nn.Linear(64, self.de_target_size)
         )
@@ -83,7 +83,7 @@ class MemoryModule(jit.ScriptModule):
             
             # 保存目标和输出
             combined_target = torch.cat([x_t, prev_x, prev_h], dim=1)
-            combined_input = torch.cat([h_t, x_t, next_h], dim=1)
+            combined_input = next_h
             
             all_encoder_targets[:, t] = combined_target
             all_encoder_outputs[:, t] = self.state_encoder(combined_input)
@@ -212,7 +212,7 @@ with torch.no_grad():
     h_t = hidden_states[0, -1, :]  # 第一个样本，最后时间步的 hidden state
 
 # 将 hidden state reshape 成 28x28 的图像
-h_image = h_t.view(28, 28).cpu().numpy()
+h_image = h_t.unsqueeze(0).cpu().numpy()
 
 # 创建保存目录
 os.makedirs("visuals", exist_ok=True)
