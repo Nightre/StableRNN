@@ -20,33 +20,16 @@ num_classes = 10
 batch_size = 128
 learning_rate = 0.001
 
-num_epochs_memory = 2  # 记忆训练轮数
+num_epochs_memory = 3  # 记忆训练轮数
 num_epochs_classify = 3  # 分类训练轮数
 
-# MNIST数据集
-train_dataset = torchvision.datasets.MNIST(root='./data', 
-                                         train=True, 
-                                         transform=transforms.ToTensor(),
-                                         download=True)
-
-test_dataset = torchvision.datasets.MNIST(root='./data', 
-                                        train=False, 
-                                        transform=transforms.ToTensor())
-
-train_loader = DataLoader(dataset=train_dataset, 
-                         batch_size=batch_size, 
-                         shuffle=True)
-
-test_loader = DataLoader(dataset=test_dataset, 
-                        batch_size=batch_size, 
-                        shuffle=False)
 
 class MemoryModule(jit.ScriptModule):
     def __init__(self, input_size, hidden_size):
         super(MemoryModule, self).__init__()
         self.hidden_size = hidden_size
         self.input_state_size = hidden_size + input_size
-        self.de_target_size = input_size + input_size + hidden_size
+        self.de_target_size = input_size + hidden_size
 
         # 记忆网络组件
         self.state_decoder = nn.Sequential(
@@ -82,7 +65,7 @@ class MemoryModule(jit.ScriptModule):
             next_h = self.state_decoder(combined_input)
             
             # 保存目标和输出
-            combined_target = torch.cat([x_t, prev_x, prev_h], dim=1)
+            combined_target = torch.cat([x_t, prev_h], dim=1)
             combined_input = next_h
             
             all_encoder_targets[:, t] = combined_target
@@ -112,122 +95,143 @@ class ClassifyModule(jit.ScriptModule):
     def forward(self, h_t: torch.Tensor) -> torch.Tensor:
         return self.fc(h_t)
     
+if __name__ == "__main__":
 
+    # MNIST数据集
+    train_dataset = torchvision.datasets.MNIST(root='./data', 
+                                            train=True, 
+                                            transform=transforms.ToTensor(),
+                                            download=True)
 
-# 初始化模型
-memory_model = MemoryModule(input_size, hidden_size).to(device)
-classify_model = ClassifyModule(hidden_size, num_classes).to(device)
+    test_dataset = torchvision.datasets.MNIST(root='./data', 
+                                            train=False, 
+                                            transform=transforms.ToTensor())
 
-# 优化器分开配置
-memory_optimizer = torch.optim.Adam(memory_model.parameters(), lr=learning_rate)
-classify_optimizer = torch.optim.Adam(classify_model.parameters(), lr=learning_rate)
+    train_loader = DataLoader(dataset=train_dataset, 
+                            batch_size=batch_size, 
+                            shuffle=True)
 
-# 损失函数
-reconstruction_loss = nn.SmoothL1Loss()
-ce_loss = nn.CrossEntropyLoss()
+    test_loader = DataLoader(dataset=test_dataset, 
+                            batch_size=batch_size, 
+                            shuffle=False)
 
-# 训练记忆模块
-print("开始训练记忆模块...")
-for epoch in range(num_epochs_memory):
-    memory_model.train()
-    for i, (images, _) in enumerate(train_loader):  # 不需要标签
-        images = images.squeeze(1).to(device)
-        
-        # 前向传播
-        encoder_output, encoder_target, _ = memory_model(images)
-        loss = reconstruction_loss(encoder_output, encoder_target)
-        
-        # 反向传播和优化
-        memory_optimizer.zero_grad()
-        loss.backward()
-        memory_optimizer.step()
-        
-        if (i+1) % 100 == 0:
-            print(f'记忆训练 Epoch [{epoch+1}/{num_epochs_memory}], Step [{i+1}/{len(train_loader)}], Loss: {loss.item():.4f}')
-    
-    print(f"[*] 记忆训练 Epoch {epoch+1} 完成")
+    # 初始化模型
+    memory_model = MemoryModule(input_size, hidden_size).to(device)
+    classify_model = ClassifyModule(hidden_size, num_classes).to(device)
 
-# 训练分类模块
-print("\n开始训练分类模块...")
-for epoch in range(num_epochs_classify):
-    classify_model.train()
-    memory_model.eval()  # 冻结记忆模块
-    
-    for i, (images, labels) in enumerate(train_loader):
-        images = images.squeeze(1).to(device)
-        labels = labels.to(device)
-        
-        # 获取记忆模块的最终隐藏状态
-        with torch.no_grad():
-            _, encoder_target, all_hidden_state = memory_model(images)
-            # 从目标中提取最终隐藏状态 (batch_size, hidden_size)
-            h_t = all_hidden_state[:, -1, :]
-        
-        # 分类前向传播
-        pred = classify_model(h_t)
-        loss = ce_loss(pred, labels)
-        
-        # 反向传播和优化
-        classify_optimizer.zero_grad()
-        loss.backward()
-        classify_optimizer.step()
-        
-        if (i+1) % 100 == 0:
-            _, predicted = torch.max(pred, 1)
-            accuracy = (predicted == labels).float().mean().item()
-            print(f'分类训练 Epoch [{epoch+1}/{num_epochs_classify}], Step [{i+1}/{len(train_loader)}], Loss: {loss.item():.4f}, Acc: {accuracy*100:.2f}%')
-    
-    print(f"[*] 分类训练 Epoch {epoch+1} 完成")
+    # 优化器分开配置
+    memory_optimizer = torch.optim.Adam(memory_model.parameters(), lr=learning_rate)
+    classify_optimizer = torch.optim.Adam(classify_model.parameters(), lr=learning_rate)
 
-print('训练完成')
+    # 损失函数
+    reconstruction_loss = nn.SmoothL1Loss()
+    ce_loss = nn.CrossEntropyLoss()
 
-# 测试模型
-memory_model.eval()
-classify_model.eval()
-with torch.no_grad():
-    correct = 0
-    total = 0
-    for images, labels in test_loader:
-        images = images.squeeze(1).to(device)
-        labels = labels.to(device)
+    # 训练记忆模块
+    print("开始训练记忆模块...")
+    for epoch in range(num_epochs_memory):
+        memory_model.train()
+        for i, (images, _) in enumerate(train_loader):  # 不需要标签
+            images = images.squeeze(1).to(device)
+            
+            # 前向传播
+            encoder_output, encoder_target, _ = memory_model(images)
+            loss = reconstruction_loss(encoder_output, encoder_target)
+            
+            # 反向传播和优化
+            memory_optimizer.zero_grad()
+            loss.backward()
+            memory_optimizer.step()
+            
+            if (i+1) % 100 == 0:
+                print(f'记忆训练 Epoch [{epoch+1}/{num_epochs_memory}], Step [{i+1}/{len(train_loader)}], Loss: {loss.item():.4f}')
         
-        # 获取记忆模块的最终隐藏状态
-        _, encoder_target, m = memory_model(images)
-        h_t = m[:, -1, :]
+        print(f"[*] 记忆训练 Epoch {epoch+1} 完成")
+
+    # 训练分类模块
+    print("\n开始训练分类模块...")
+    for epoch in range(num_epochs_classify):
+        classify_model.train()
+        memory_model.eval()  # 冻结记忆模块
         
-        # 分类
-        outputs = classify_model(h_t)
-        _, predicted = torch.max(outputs, 1)
-        total += labels.size(0)
-        correct += (predicted == labels).sum().item()
+        for i, (images, labels) in enumerate(train_loader):
+            images = images.squeeze(1).to(device)
+            labels = labels.to(device)
+            
+            # 获取记忆模块的最终隐藏状态
+            with torch.no_grad():
+                _, encoder_target, all_hidden_state = memory_model(images)
+                # 从目标中提取最终隐藏状态 (batch_size, hidden_size)
+                h_t = all_hidden_state[:, -1, :]
+            
+            # 分类前向传播
+            pred = classify_model(h_t)
+            loss = ce_loss(pred, labels)
+            
+            # 反向传播和优化
+            classify_optimizer.zero_grad()
+            loss.backward()
+            classify_optimizer.step()
+            
+            if (i+1) % 100 == 0:
+                _, predicted = torch.max(pred, 1)
+                accuracy = (predicted == labels).float().mean().item()
+                print(f'分类训练 Epoch [{epoch+1}/{num_epochs_classify}], Step [{i+1}/{len(train_loader)}], Loss: {loss.item():.4f}, Acc: {accuracy*100:.2f}%')
+        
+        print(f"[*] 分类训练 Epoch {epoch+1} 完成")
+
+    print('训练完成')
+
+    # 测试模型
+    memory_model.eval()
+    classify_model.eval()
+    with torch.no_grad():
+        correct = 0
+        total = 0
+        for images, labels in test_loader:
+            images = images.squeeze(1).to(device)
+            labels = labels.to(device)
+            
+            # 获取记忆模块的最终隐藏状态
+            _, encoder_target, m = memory_model(images)
+            h_t = m[:, -1, :]
+            
+            # 分类
+            outputs = classify_model(h_t)
+            _, predicted = torch.max(outputs, 1)
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
 
     print(f'测试准确率: {100 * correct / total:.2f}%')
 
-sample_images, _ = next(iter(test_loader))
-sample_images = sample_images.squeeze(1).to(device)  # shape: (batch, 28, 28)
+    # 从测试集中取前几个样本
+    sample_images, sample_labels = next(iter(test_loader))
+    sample_images = sample_images[:12].squeeze(1).to(device)  # 取前12张图片
+    sample_labels = sample_labels[:12].to(device)
 
-# 获取隐藏状态
-with torch.no_grad():
-    _, _, hidden_states = memory_model(sample_images)
-    h_t = hidden_states[0, -1, :]  # 第一个样本，最后时间步的 hidden state
+    # 获取预测结果
+    with torch.no_grad():
+        _, _, hidden_states = memory_model(sample_images)
+        h_t = hidden_states[:, -1, :]  # 每个样本的最终 hidden state
+        preds = classify_model(h_t)
+        _, predicted_labels = torch.max(preds, 1)
 
-# 将 hidden state reshape 成 28x28 的图像
-h_image = h_t.unsqueeze(0).cpu().numpy()
+    # 显示图像和预测
+    plt.figure(figsize=(12, 4))
+    for i in range(12):
+        plt.subplot(2, 6, i + 1)
+        plt.imshow(sample_images[i].cpu().numpy(), cmap='gray')
+        plt.title(f'Pred: {predicted_labels[i].item()}')
+        plt.axis('off')
 
-# 创建保存目录
-os.makedirs("visuals", exist_ok=True)
+    plt.tight_layout()
+    plt.savefig("visuals/sample_predictions.png")
+    plt.show()
 
-# 保存图片
-plt.imshow(h_image, cmap='gray')
-plt.title("Final Hidden State (Reshaped)")
-plt.axis('off')
-plt.savefig("visuals/hidden_state_image.png")
-plt.close()
+    print("已保存并展示 sample_predictions.png")
 
-print("已保存 hidden state 图像到 'visuals/hidden_state_image.png'")
-
-# 保存模型
-torch.save({
-    'memory': memory_model.state_dict(),
-    'classify': classify_model.state_dict()
-}, 'separate_rnn_mnist.pth')
+    # 保存模型
+    torch.save({
+        'memory': memory_model.state_dict(),
+        'classify': classify_model.state_dict()
+    }, 'separate_rnn_mnist.pth')
