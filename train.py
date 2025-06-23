@@ -7,7 +7,7 @@ import torch.nn.functional as F
 import torch.jit as jit
 from typing import List, Tuple
 import matplotlib.pyplot as plt
-import os
+import random
 
 # 设备配置
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -15,12 +15,12 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 # 超参数
 input_size = 28
 sequence_length = 28
-hidden_size = 256
+hidden_size = 80
 num_classes = 10
 batch_size = 128
 learning_rate = 0.001
 
-num_epochs_memory = 3  # 记忆训练轮数
+num_epochs_memory = 4  # 记忆训练轮数
 num_epochs_classify = 3  # 分类训练轮数
 
 
@@ -29,19 +29,21 @@ class MemoryModule(jit.ScriptModule):
         super(MemoryModule, self).__init__()
         self.hidden_size = hidden_size
         self.input_state_size = hidden_size + input_size
-        self.de_target_size = input_size + hidden_size
+        self.de_target_size = input_size + input_size + hidden_size
+        
+        self.unit = 128
 
         # 记忆网络组件
         self.state_decoder = nn.Sequential(
-            nn.Linear(self.input_state_size, 64),
+            nn.Linear(self.input_state_size, self.unit),
             nn.GELU(),
-            nn.Linear(64, hidden_size)
+            nn.Linear(self.unit, hidden_size)
         )
         
         self.state_encoder = nn.Sequential(
-            nn.Linear(hidden_size, 64),
+            nn.Linear(hidden_size, self.unit),
             nn.GELU(),
-            nn.Linear(64, self.de_target_size)
+            nn.Linear(self.unit, self.de_target_size)
         )
     
     @jit.script_method
@@ -59,13 +61,14 @@ class MemoryModule(jit.ScriptModule):
         for t in range(seq_len):
             x_t = x[:, t, :]
             prev_x = torch.zeros_like(x_t) if t == 0 else x[:, t-1, :]
+            next_x = torch.zeros_like(x_t) if t == seq_len-1 else x[:, t+1, :]
             
             # 计算下一隐藏状态
             combined_input = torch.cat([x_t, h_t], dim=1)
             next_h = self.state_decoder(combined_input)
             
             # 保存目标和输出
-            combined_target = torch.cat([x_t, prev_h], dim=1)
+            combined_target = torch.cat([x_t, next_x, prev_h], dim=1)
             combined_input = next_h
             
             all_encoder_targets[:, t] = combined_target
@@ -85,8 +88,6 @@ class ClassifyModule(jit.ScriptModule):
         
         self.fc = nn.Sequential(
             nn.Linear(hidden_size, self.units),
-            nn.GELU(),
-            nn.Linear(self.units, self.units),
             nn.GELU(),
             nn.Linear(self.units, num_classes),
         )
@@ -205,9 +206,15 @@ if __name__ == "__main__":
     print(f'测试准确率: {100 * correct / total:.2f}%')
 
     # 从测试集中取前几个样本
-    sample_images, sample_labels = next(iter(test_loader))
-    sample_images = sample_images[:12].squeeze(1).to(device)  # 取前12张图片
-    sample_labels = sample_labels[:12].to(device)
+    random_indices = random.sample(range(len(test_dataset)), 12)
+
+    # 从原始数据集中取出这些样本
+    sample_images = torch.stack([test_dataset[i][0] for i in random_indices])  # shape: (12, 1, 28, 28)
+    sample_labels = torch.tensor([test_dataset[i][1] for i in random_indices])
+
+    # 处理成你模型需要的格式
+    sample_images = sample_images.squeeze(1).to(device)
+    sample_labels = sample_labels.to(device)
 
     # 获取预测结果
     with torch.no_grad():
